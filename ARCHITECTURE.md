@@ -99,7 +99,9 @@ Prisma 7 introduces strict separation of environment-specific details from struc
 - **`prisma.config.ts`:** Used as a typescript configuration layer to load the connection string dynamically from environment variables, preventing connection leakage in the `schema.prisma`.
 - **Postgres Driver Adapter:** Prisma Client runs via the `@prisma/adapter-pg` driver adapter using a Node-native connection Pool. This configuration manages connection pooling effectively, ensuring optimized reuse of database sockets under heavy API load.
 
-### 2. Modern UI & Base UI Integration
-For our design system, we utilize Tailwind CSS v4 alongside Shadcn components built with `@base-ui/react`:
+### 2. Modern UI, Base UI, & Design Tokens
+For our design system, we utilize Tailwind CSS v4 configured with brand-specific design tokens alongside Shadcn components built with `@base-ui/react`:
+- **Color Palettes:** Map exact hex tokens for UI elements: Primary (`#6366F1`), Secondary (`#10B981`), Tertiary (`#0F172A`), and Neutral (`#F8FAFC`).
+- **Typography Engine:** Next.js loads and injects `Inter` for headers/body fonts and `JetBrains Mono` for input labels (`font-label`).
 - **Render-Based Triggering:** We utilize Base UI's `render` prop composition model (e.g. `<DialogTrigger render={<Button ... />} />`) rather than the older Radix-style `asChild` composition, ensuring clean React 19 node trees.
 - **Group Context Enforcement:** In accordance with Base UI constraints, menu parts such as `DropdownMenuLabel` are securely nested inside `<DropdownMenuGroup>` to ensure proper accessibility and context alignment.

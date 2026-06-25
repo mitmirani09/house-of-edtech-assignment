@@ -7,8 +7,9 @@ import { loginUser } from '@/lib/actions/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { toast } from 'sonner'
+import { Compass } from 'lucide-react'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -18,8 +19,6 @@ export default function LoginPage() {
         const result = await loginUser(prevState, formData)
         return result
       } catch (err: any) {
-        // NextAuth redirect triggers error throwing in Server Actions
-        // If it is a redirect, let Next.js handle it
         if (err.message === 'NEXT_REDIRECT') {
           throw err
         }
@@ -36,38 +35,59 @@ export default function LoginPage() {
   }, [state])
 
   return (
-    <div className="flex-1 flex items-center justify-center bg-radial from-slate-900 via-slate-950 to-black px-4 py-12 sm:px-6 lg:px-8">
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,#0f172a_1px,transparent_1px),linear-gradient(to_bottom,#0f172a_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] opacity-35" />
+    <div className="flex-1 flex flex-col items-center justify-center bg-[#F8FAFC] px-4 py-16 sm:px-6 lg:px-8 font-sans">
+      {/* Top Logo Header */}
+      <div className="flex items-center gap-3 mb-8">
+        <div className="flex items-center justify-center w-8 h-8 rounded-md bg-[#6366F1] text-white">
+          <Compass className="h-5 w-5" />
+        </div>
+        <span className="text-lg font-bold text-[#0F172A] tracking-tight">
+          House of Edtech
+        </span>
+      </div>
       
-      <Card className="w-full max-w-md bg-slate-950/70 border-slate-800 backdrop-blur-md shadow-2xl relative z-10">
-        <CardHeader className="space-y-2 text-center">
-          <div className="flex justify-center mb-2">
-            <span className="text-2xl font-bold bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent">
-              EdtechDocs
-            </span>
+      {/* Card Container */}
+      <Card className="w-full max-w-[420px] bg-white border border-slate-200/80 rounded-xl shadow-md overflow-hidden relative border-t-[4px] border-t-[#6366F1]">
+        <CardContent className="pt-10 px-8 pb-10 space-y-8">
+          {/* Welcome Text */}
+          <div className="text-center space-y-2">
+            <h2 className="text-[22px] font-bold tracking-tight text-[#0F172A]">
+              Welcome Back
+            </h2>
+            <p className="text-sm text-slate-500 font-sans">
+              Collaborative document editing, offline or online.
+            </p>
           </div>
-          <CardTitle className="text-2xl font-bold tracking-tight text-white">Welcome back</CardTitle>
-          <CardDescription className="text-slate-400">
-            Enter your credentials to access your collaborative documents
-          </CardDescription>
-        </CardHeader>
-        <form action={formAction}>
-          <CardContent className="space-y-4">
+
+          <form action={formAction} className="space-y-6">
+            {/* Email Address */}
             <div className="space-y-2">
-              <Label htmlFor="email" className="text-slate-300">Email Address</Label>
+              <Label htmlFor="email" className="font-label text-xs tracking-wider text-slate-500 font-medium uppercase">
+                Email Address
+              </Label>
               <Input
                 id="email"
                 name="email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder="name@company.com"
                 required
                 disabled={isPending}
-                className="bg-slate-900/60 border-slate-800 text-white placeholder-slate-500 focus-visible:ring-indigo-500"
+                className="bg-white border-slate-200 hover:border-slate-300 text-[#0F172A] placeholder-slate-400 focus-visible:ring-[#6366F1] focus-visible:border-[#6366F1] h-11 px-3.5 rounded-lg text-sm"
               />
             </div>
+
+            {/* Password */}
             <div className="space-y-2">
               <div className="flex justify-between items-center">
-                <Label htmlFor="password" className="text-slate-300">Password</Label>
+                <Label htmlFor="password" className="font-label text-xs tracking-wider text-slate-500 font-medium uppercase">
+                  Password
+                </Label>
+                <Link 
+                  href="#" 
+                  className="font-label text-xs text-[#6366F1] hover:underline font-medium"
+                >
+                  Forgot password?
+                </Link>
               </div>
               <Input
                 id="password"
@@ -76,27 +96,35 @@ export default function LoginPage() {
                 placeholder="••••••••"
                 required
                 disabled={isPending}
-                className="bg-slate-900/60 border-slate-800 text-white placeholder-slate-500 focus-visible:ring-indigo-500"
+                className="bg-white border-slate-200 hover:border-slate-300 text-[#0F172A] placeholder-slate-400 focus-visible:ring-[#6366F1] focus-visible:border-[#6366F1] h-11 px-3.5 rounded-lg text-sm"
               />
             </div>
-          </CardContent>
-          <CardFooter className="flex flex-col space-y-4">
+
+            {/* Submit Button */}
             <Button
               type="submit"
               disabled={isPending}
-              className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium shadow-lg hover:shadow-indigo-500/20 transition-all duration-200"
+              className="w-full bg-[#6366F1] hover:bg-[#5558e6] text-white font-bold h-11 rounded-lg text-sm shadow-sm transition-colors cursor-pointer"
             >
-              {isPending ? 'Signing in...' : 'Sign In'}
+              {isPending ? 'Logging in...' : 'Login to Your Workspace'}
             </Button>
-            <div className="text-sm text-center text-slate-400">
-              Don't have an account?{' '}
-              <Link href="/register" className="text-indigo-400 hover:text-indigo-300 transition-colors font-medium">
-                Create one
-              </Link>
-            </div>
-          </CardFooter>
-        </form>
+          </form>
+
+          {/* Create Account Link */}
+          <div className="text-sm text-center text-slate-500 font-sans pt-2">
+            Don't have an account?{' '}
+            <Link href="/register" className="text-[#6366F1] hover:underline font-medium">
+              Sign up
+            </Link>
+          </div>
+        </CardContent>
       </Card>
+
+      {/* Local-First Engine Active status */}
+      <div className="flex items-center gap-2 mt-8 text-xs text-slate-500 font-label tracking-wide">
+        <span className="h-2 w-2 rounded-full bg-[#10B981] inline-block animate-pulse" />
+        Local-First Engine Active
+      </div>
     </div>
   )
 }
