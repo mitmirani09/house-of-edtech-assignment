@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { EditorContainer } from '@/components/editor/EditorContainer'
+import { ShareDialog } from '@/components/editor/ShareDialog'
 
 interface DocumentPageProps {
   params: Promise<{ id: string }>
@@ -42,11 +43,11 @@ export default async function DocumentPage({ params }: DocumentPageProps) {
               {document.title}
             </h2>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <ShareDialog documentId={document.id} userRole={role} />
             <div className="text-xs font-mono px-2 py-0.5 rounded border border-border bg-muted capitalize">
               Role: {role.toLowerCase()}
             </div>
-            {/* Visual placeholder for sync status will be wired in client container */}
           </div>
         </div>
       </header>

@@ -159,3 +159,12 @@ export default async function DocumentPage({ params }: DocumentPageProps) {
 }
 ```
 This protects dynamic document routes at the server level, redirecting unauthenticated or unauthorized users back to the login or dashboard pages.
+
+### 5. Collaborative Sharing and Access Management (RBAC Flow)
+To allow document sharing and access delegation, we implemented the following security flow:
+- **Caller Role Validation:** Server Actions (`inviteUserToDocument`, `updateMemberRole`, `removeMember`) fetch the current user's session and query the `DocumentMember` table to verify they are the `OWNER` of the document. If not, the actions fail immediately with an unauthorized error.
+- **Lookup Validation:** The `inviteUserToDocument` action resolves the target user's email to verify their registered account exists, preventing invitations to non-existent users. It also verifies that they are not already associated with the document.
+- **Component-Level Role Customization (`ShareDialog.tsx`):**
+  - Current document members with any role can trigger the dialog to view the list of active collaborators.
+  - Only document owners see the **Invite Form** (email field and role select dropdown) and **Management Controls** (dropdown selects to swap collaborator roles between `EDITOR`/`VIEWER` and revocation buttons to delete memberships).
+  - Member listings automatically display a customized, themed badge based on their role (`OWNER` in Indigo, `EDITOR` in Emerald, `VIEWER` in Slate).
