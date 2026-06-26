@@ -87,3 +87,69 @@ export async function joinDocument(formData: FormData) {
     return { error: 'Failed to join document' }
   }
 }
+
+export async function getDocumentWithRole(documentId: string) {
+  const session = await auth()
+  if (!session?.user?.id) {
+    return { error: 'Not authenticated' }
+  }
+
+  try {
+    const membership = await prisma.documentMember.findUnique({
+      where: {
+        userId_documentId: {
+          userId: session.user.id,
+          documentId,
+        },
+      },
+      include: {
+        document: true,
+      },
+    })
+
+    if (!membership) {
+      return { error: 'Access denied. You are not a member of this document.' }
+    }
+
+    return {
+      success: true,
+      document: membership.document,
+      role: membership.role,
+    }
+  } catch (error) {
+    console.error('Get document with role error:', error)
+    return { error: 'Failed to load document' }
+  }
+}
+
+export async function updateDocumentContent(documentId: string, content: string) {
+  const session = await auth()
+  if (!session?.user?.id) {
+    return { error: 'Not authenticated' }
+  }
+
+  try {
+    const membership = await prisma.documentMember.findUnique({
+      where: {
+        userId_documentId: {
+          userId: session.user.id,
+          documentId,
+        },
+      },
+    })
+
+    if (!membership || (membership.role !== Role.OWNER && membership.role !== Role.EDITOR)) {
+      return { error: 'Unauthorized. You do not have write access to this document.' }
+    }
+
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { content },
+    })
+
+    return { success: true }
+  } catch (error) {
+    console.error('Update document content error:', error)
+    return { error: 'Failed to save changes' }
+  }
+}

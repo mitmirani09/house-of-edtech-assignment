@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+
 import Link from 'next/link'
 import { loginUser } from '@/lib/actions/auth'
 import { Button } from '@/components/ui/button'
@@ -12,14 +12,13 @@ import { toast } from 'sonner'
 import { Compass } from 'lucide-react'
 
 export default function LoginPage() {
-  const router = useRouter()
   const [state, formAction, isPending] = useActionState(
-    async (prevState: any, formData: FormData) => {
+    async (prevState: { error?: string } | null, formData: FormData) => {
       try {
         const result = await loginUser(prevState, formData)
-        return result
-      } catch (err: any) {
-        if (err.message === 'NEXT_REDIRECT') {
+        return result ?? null
+      } catch (err) {
+        if (err instanceof Error && err.message === 'NEXT_REDIRECT') {
           throw err
         }
         return { error: 'Something went wrong.' }
@@ -112,7 +111,7 @@ export default function LoginPage() {
 
           {/* Create Account Link */}
           <div className="text-sm text-center text-slate-500 font-sans pt-2">
-            Don't have an account?{' '}
+            {"Don't have an account?"}{' '}
             <Link href="/register" className="text-[#6366F1] hover:underline font-medium">
               Sign up
             </Link>

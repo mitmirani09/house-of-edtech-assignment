@@ -19,21 +19,17 @@ export default function RegisterPage() {
 
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [passwordStrength, setPasswordStrength] = useState(0)
 
   // Password strength validation logic
-  useEffect(() => {
+  const passwordStrength = (() => {
+    if (!password) return 0
     let score = 0
-    if (!password) {
-      setPasswordStrength(0)
-      return
-    }
     if (password.length >= 8) score++
     if (/[A-Z]/.test(password)) score++
     if (/[0-9]/.test(password)) score++
     if (/[^A-Za-z0-9]/.test(password)) score++
-    setPasswordStrength(score)
-  }, [password])
+    return score
+  })()
 
   useEffect(() => {
     if (state?.success) {
@@ -135,7 +131,7 @@ export default function RegisterPage() {
           {/* Quote Card */}
           <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs relative">
             <p className="text-[#0F172A] text-sm italic leading-relaxed mb-4">
-              "EdtechDocs is the first editor that allows me to write documents on a plane with zero connection, and then merges perfectly with my team's changes when we land."
+              {"\"EdtechDocs is the first editor that allows me to write documents on a plane with zero connection, and then merges perfectly with my team's changes when we land.\""}
             </p>
             <div className="flex items-center gap-3">
               <div className="flex items-center justify-center h-9 w-9 rounded-full bg-slate-900 text-white font-bold text-xs">

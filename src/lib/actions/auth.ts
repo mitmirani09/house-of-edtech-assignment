@@ -65,7 +65,7 @@ export async function registerUser(prevState: RegisterActionState, formData: For
   }
 }
 
-export async function loginUser(prevState: any, formData: FormData) {
+export async function loginUser(prevState: { error?: string } | null, formData: FormData) {
   const email = formData.get('email') as string
   const password = formData.get('password') as string
 

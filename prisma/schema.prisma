@@ -19,6 +19,7 @@ model User {
 model Document {
   id        String           @id @default(cuid())
   title     String
+  content   String?          @default("") // Rich text HTML/text content
   yState    Bytes?           // Encoded Yjs document state
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
