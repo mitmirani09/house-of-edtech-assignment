@@ -1,8 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import Collaboration from '@tiptap/extension-collaboration'
+import * as Y from 'yjs'
+import { IndexeddbPersistence } from 'y-indexeddb'
 import { updateDocumentContent } from '@/lib/actions/document'
 import { Button } from '@/components/ui/button'
 import { 
@@ -35,58 +38,18 @@ export function EditorContainer({
   role 
 }: EditorContainerProps) {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
+  const [isOnline, setIsOnline] = useState(typeof window !== 'undefined' ? navigator.onLine : true)
+  const [isSynced, setIsSynced] = useState(false)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   
   const isReadOnly = role === Role.VIEWER
+  const initialContentRef = useRef(initialContent)
 
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: {
-          levels: [1, 2, 3]
-        }
-      })
-    ],
-    content: initialContent,
-    editable: !isReadOnly,
-    immediatelyRender: false, // Prevents Next.js SSR hydration warnings
-    onUpdate: ({ editor }) => {
-      const html = editor.getHTML()
-      
-      if (isReadOnly) return
+  // Create persistent Y.Doc instance
+  const ydoc = useMemo(() => new Y.Doc(), [])
 
-      setSaveStatus('saving')
-      
-      // Debounce saving: trigger save 1.2 seconds after typing stops
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current)
-      }
-      
-      saveTimeoutRef.current = setTimeout(async () => {
-        await handleSave(html)
-      }, 1200)
-    },
-    onBlur: ({ editor }) => {
-      if (isReadOnly) return
-      
-      const html = editor.getHTML()
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current)
-      }
-      handleSave(html)
-    }
-  })
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current)
-      }
-    }
-  }, [])
-
-  const handleSave = async (html: string) => {
+  // Declaring handleSave first to prevent hoisting/lexical scope errors in useEditor and useEffect
+  const handleSave = useCallback(async (html: string) => {
     try {
       const res = await updateDocumentContent(documentId, html)
       if (res?.error) {
@@ -99,7 +62,120 @@ export function EditorContainer({
       console.error(err)
       setSaveStatus('error')
     }
-  }
+  }, [documentId])
+
+
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: {
+          levels: [1, 2, 3]
+        }
+      }),
+      Collaboration.configure({
+        document: ydoc,
+      })
+    ],
+    editable: !isReadOnly,
+    immediatelyRender: false, // Prevents Next.js SSR hydration warnings
+    onUpdate: ({ editor }) => {
+      if (isReadOnly) return
+
+      if (navigator.onLine) {
+        setSaveStatus('saving')
+        
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current)
+        }
+        
+        saveTimeoutRef.current = setTimeout(async () => {
+          const html = editor.getHTML()
+          await handleSave(html)
+        }, 1200)
+      } else {
+        // Offline: changes are cached in IndexedDB
+        setSaveStatus('saved')
+      }
+    },
+    onBlur: ({ editor }) => {
+      if (isReadOnly) return
+      
+      if (navigator.onLine) {
+        const html = editor.getHTML()
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current)
+        }
+        handleSave(html)
+      }
+    }
+  })
+
+  const handleManualSave = useCallback(async () => {
+    if (!editor || isReadOnly) return
+    setSaveStatus('saving')
+    const html = editor.getHTML()
+    await handleSave(html)
+  }, [editor, isReadOnly, handleSave])
+
+  // Setup local IndexedDB persistence with y-indexeddb
+  useEffect(() => {
+    const provider = new IndexeddbPersistence(documentId, ydoc)
+    provider.on('synced', () => {
+      setIsSynced(true)
+    })
+    return () => {
+      provider.destroy()
+    }
+  }, [documentId, ydoc])
+
+  // Handle window online/offline events
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true)
+      toast.success('Internet reconnected. Syncing changes to cloud...')
+      if (editor && !isReadOnly) {
+        const html = editor.getHTML()
+        setSaveStatus('saving')
+        handleSave(html)
+      }
+    }
+
+    const handleOffline = () => {
+      setIsOnline(false)
+      toast.error('Connection lost. Working offline — changes saved locally.')
+    }
+
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [editor, isReadOnly, handleSave])
+
+  // Populate editor with initialContent if IndexedDB has no content
+  useEffect(() => {
+    if (isSynced && editor) {
+      const isDocEmpty = ydoc.getXmlFragment('default').length === 0
+      if (isDocEmpty && initialContentRef.current) {
+        editor.commands.setContent(initialContentRef.current)
+        initialContentRef.current = ''
+      }
+    }
+  }, [isSynced, editor, ydoc])
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+      }
+    }
+  }, [])
+
+
 
   if (!editor) return null
 
@@ -225,22 +301,38 @@ export function EditorContainer({
 
         {/* Sync / Save Status Banner */}
         <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-50 border border-border text-xs font-mono select-none">
-          {saveStatus === 'saved' && (
+          {!isOnline ? (
             <>
-              <Check className="h-3.5 w-3.5 text-secondary" />
-              <span className="text-slate-600">Saved to Cloud</span>
+              <span className="h-2 w-2 rounded-full bg-amber-500 inline-block animate-pulse" />
+              <span className="text-amber-800 font-medium">Offline — Saved Locally</span>
             </>
-          )}
-          {saveStatus === 'saving' && (
+          ) : (
             <>
-              <RefreshCw className="h-3.5 w-3.5 text-primary animate-spin" />
-              <span className="text-primary font-medium">Saving...</span>
-            </>
-          )}
-          {saveStatus === 'error' && (
-            <>
-              <CloudOff className="h-3.5 w-3.5 text-destructive" />
-              <span className="text-destructive font-medium">Save Failed</span>
+              {saveStatus === 'saved' && (
+                <>
+                  <Check className="h-3.5 w-3.5 text-secondary" />
+                  <span className="text-slate-600">Saved to Cloud</span>
+                </>
+              )}
+              {saveStatus === 'saving' && (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 text-primary animate-spin" />
+                  <span className="text-primary font-medium">Saving...</span>
+                </>
+              )}
+              {saveStatus === 'error' && (
+                <div className="flex items-center gap-1.5">
+                  <CloudOff className="h-3.5 w-3.5 text-destructive" />
+                  <span className="text-destructive font-medium">Save Failed</span>
+                  <button
+                    onClick={handleManualSave}
+                    className="ml-1 px-1.5 py-0.5 rounded bg-destructive/10 text-destructive hover:bg-destructive/15 text-[10px] font-bold cursor-pointer transition-colors"
+                    title="Retry saving changes to cloud"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>

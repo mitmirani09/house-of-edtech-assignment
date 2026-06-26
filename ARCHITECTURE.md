@@ -168,3 +168,30 @@ To allow document sharing and access delegation, we implemented the following se
   - Current document members with any role can trigger the dialog to view the list of active collaborators.
   - Only document owners see the **Invite Form** (email field and role select dropdown) and **Management Controls** (dropdown selects to swap collaborator roles between `EDITOR`/`VIEWER` and revocation buttons to delete memberships).
   - Member listings automatically display a customized, themed badge based on their role (`OWNER` in Indigo, `EDITOR` in Emerald, `VIEWER` in Slate).
+
+---
+
+## 📶 Phase 3: Local-First + Yjs Offline Support
+
+Phase 3 introduces local-first document handling using a Yjs CRDT model combined with IndexedDB database persistence in the browser to ensure the application works offline seamlessly.
+
+### 1. Yjs CRDT State Management
+The TipTap text editor model is bound directly to Yjs:
+- **Yjs Document Model:** We instantiate a `Y.Doc` state that captures insertions, deletions, and edits as conflict-free operations.
+- **TipTap Collaboration Plugin:** We bind the Y.Doc using `@tiptap/extension-collaboration` to map the ProseMirror editor schema. The default `document` extension of `StarterKit` remains active to define the root document node type (`doc`) required by ProseMirror.
+
+### 2. Browser Caching (IndexedDB)
+Local caching is handled via `y-indexeddb`:
+- **`IndexeddbPersistence`:** Maps the local Y.Doc instance to the document's ID key in IndexedDB. All client edits are written to IndexedDB synchronously.
+- **On Synced Handlers:** When the database sync completes, we check if the Y.Doc is empty (length of the `default` shared fragment is 0). If empty, we populate the editor with the `initialContent` retrieved from PostgreSQL, providing a fallback for new collaborators or fresh mounts.
+
+### 3. Connection State Banner & Reconnection Sync
+- **Browser Event Handlers:** We bind window `online` and `offline` events:
+- **Offline State:** Toggles state, displays a connection alert toast, and bypasses server database saves. The status banner renders `Offline — Saved Locally`.
+- **Online State:** Toggles state, triggers a success toast, and immediately forces a save of the current HTML content to the PostgreSQL database to flush all offline changes.
+
+### 4. Manual Save Retry Trigger
+To prevent unnecessary API calls and optimize UX during server connection or database sync errors:
+- If a Cloud save fails while online, the editor updates state to `saveStatus = "error"`.
+- A themed inline **"Retry"** button is rendered inside the status banner.
+- Clicking the button triggers `handleManualSave` which grabs the latest local editor content and directly dispatches `updateDocumentContent` server action, avoiding forcing the user to type or modify text to retry syncing.

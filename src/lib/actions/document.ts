@@ -122,7 +122,9 @@ export async function getDocumentWithRole(documentId: string) {
   }
 }
 
+
 export async function updateDocumentContent(documentId: string, content: string) {
+  // return { error: 'Simulated connection timeout to database.' }
   const session = await auth()
   if (!session?.user?.id) {
     return { error: 'Not authenticated' }
