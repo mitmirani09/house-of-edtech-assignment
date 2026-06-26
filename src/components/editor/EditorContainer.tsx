@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import Collaboration from '@tiptap/extension-collaboration'
+import Collaboration, { isChangeOrigin } from '@tiptap/extension-collaboration'
+import CollaborationCaret from '@tiptap/extension-collaboration-caret'
 import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
+import { WebsocketProvider } from 'y-websocket'
 import { updateDocumentContent } from '@/lib/actions/document'
 import { Button } from '@/components/ui/button'
 import { 
@@ -25,28 +27,74 @@ import {
 import { toast } from 'sonner'
 import { Role } from '@prisma/client'
 
+// Deterministic color helper for collaboration cursors
+function getRandomColor(str: string) {
+  const colors = [
+    '#6366F1', // Primary / Indigo
+    '#10B981', // Secondary / Emerald
+    '#F59E0B', // Amber
+    '#EF4444', // Red
+    '#EC4899', // Pink
+    '#8B5CF6', // Purple
+    '#06B6D4', // Cyan
+    '#F97316', // Orange
+  ]
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  const index = Math.abs(hash) % colors.length
+  return colors[index]
+}
+
 interface EditorContainerProps {
   documentId: string
   initialTitle: string
   initialContent: string
   role: Role
+  currentUser?: {
+    id: string
+    name: string
+    email: string
+  }
 }
 
 export function EditorContainer({ 
   documentId, 
   initialContent, 
-  role 
+  role,
+  currentUser
 }: EditorContainerProps) {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const [isOnline, setIsOnline] = useState(typeof window !== 'undefined' ? navigator.onLine : true)
-  const [isSynced, setIsSynced] = useState(false)
+  const [localSynced, setLocalSynced] = useState(false)
+  const [remoteSynced, setRemoteSynced] = useState(false)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  const isSynced = localSynced && remoteSynced
   
   const isReadOnly = role === Role.VIEWER
   const initialContentRef = useRef(initialContent)
 
   // Create persistent Y.Doc instance
-  const ydoc = useMemo(() => new Y.Doc(), [])
+  const ydocRef = useRef<Y.Doc | null>(null)
+  if (ydocRef.current === null) {
+    ydocRef.current = new Y.Doc()
+  }
+  const ydoc = ydocRef.current
+
+  // Create persistent WebsocketProvider instance
+  const wsProviderRef = useRef<WebsocketProvider | null>(null)
+  if (wsProviderRef.current === null && typeof window !== 'undefined') {
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:1234'
+    wsProviderRef.current = new WebsocketProvider(wsUrl, documentId, ydoc, {
+      params: {
+        userId: currentUser?.id || '',
+        room: documentId,
+      }
+    })
+  }
+  const wsProvider = wsProviderRef.current
 
   // Declaring handleSave first to prevent hoisting/lexical scope errors in useEditor and useEffect
   const handleSave = useCallback(async (html: string) => {
@@ -75,12 +123,26 @@ export function EditorContainer({
       }),
       Collaboration.configure({
         document: ydoc,
-      })
+      }),
+      ...(wsProvider ? [
+        CollaborationCaret.configure({
+          provider: wsProvider,
+          user: {
+            name: currentUser?.name || 'Anonymous',
+            color: getRandomColor(currentUser?.id || 'anonymous'),
+          }
+        })
+      ] : [])
     ],
     editable: !isReadOnly,
     immediatelyRender: false, // Prevents Next.js SSR hydration warnings
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor, transaction }) => {
       if (isReadOnly) return
+
+      // Skip database save if the transaction was triggered by a remote collaboration change
+      if (transaction && isChangeOrigin(transaction)) {
+        return
+      }
 
       if (navigator.onLine) {
         setSaveStatus('saving')
@@ -122,12 +184,45 @@ export function EditorContainer({
   useEffect(() => {
     const provider = new IndexeddbPersistence(documentId, ydoc)
     provider.on('synced', () => {
-      setIsSynced(true)
+      setLocalSynced(true)
     })
     return () => {
       provider.destroy()
     }
   }, [documentId, ydoc])
+
+  // Setup remote WebSocket sync & handle connection status / cleanup
+  useEffect(() => {
+    if (!wsProvider) {
+      const timer = setTimeout(() => {
+        setRemoteSynced(true)
+      }, 0)
+      return () => clearTimeout(timer)
+    }
+
+    const handleSync = (synced: boolean) => {
+      if (synced) {
+        setRemoteSynced(true)
+      }
+    }
+
+    wsProvider.on('sync', handleSync)
+
+    // Fallback timeout of 2 seconds for offline or server unreachable state
+    const timeoutId = setTimeout(() => {
+      setRemoteSynced(true)
+    }, 2000)
+
+    return () => {
+      wsProvider.off('sync', handleSync)
+      clearTimeout(timeoutId)
+      wsProvider.destroy()
+      wsProviderRef.current = null
+      
+      ydoc.destroy()
+      ydocRef.current = null
+    }
+  }, [wsProvider, ydoc])
 
   // Handle window online/offline events
   useEffect(() => {

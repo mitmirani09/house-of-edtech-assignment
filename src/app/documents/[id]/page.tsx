@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { EditorContainer } from '@/components/editor/EditorContainer'
 import { ShareDialog } from '@/components/editor/ShareDialog'
+import { auth } from '@/auth'
 
 interface DocumentPageProps {
   params: Promise<{ id: string }>
@@ -11,6 +12,11 @@ interface DocumentPageProps {
 
 export default async function DocumentPage({ params }: DocumentPageProps) {
   const { id } = await params
+
+  const session = await auth()
+  if (!session?.user?.id) {
+    redirect('/login')
+  }
 
   const res = await getDocumentWithRole(id)
 
@@ -27,6 +33,12 @@ export default async function DocumentPage({ params }: DocumentPageProps) {
 
   if (!document || !role) {
     redirect('/dashboard')
+  }
+
+  const currentUser = {
+    id: session.user.id,
+    name: session.user.name || session.user.email || 'Anonymous',
+    email: session.user.email || '',
   }
 
   return (
@@ -59,6 +71,7 @@ export default async function DocumentPage({ params }: DocumentPageProps) {
           initialTitle={document.title} 
           initialContent={document.content || ''} 
           role={role} 
+          currentUser={currentUser}
         />
       </main>
     </div>

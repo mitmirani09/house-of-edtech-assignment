@@ -1,4 +1,4 @@
-# EdtechDocs - Architecture & System Design (Phase 1 & 2)
+# EdtechDocs - Architecture & System Design (Phases 1 - 4)
 
 This document provides a comprehensive overview of the design patterns, architectural layers, and technologies utilized in **EdtechDocs**, a local-first collaborative document editor.
 
@@ -195,3 +195,34 @@ To prevent unnecessary API calls and optimize UX during server connection or dat
 - If a Cloud save fails while online, the editor updates state to `saveStatus = "error"`.
 - A themed inline **"Retry"** button is rendered inside the status banner.
 - Clicking the button triggers `handleManualSave` which grabs the latest local editor content and directly dispatches `updateDocumentContent` server action, avoiding forcing the user to type or modify text to retry syncing.
+
+---
+
+## 🌐 Phase 4: Real-Time Sync + WebSockets
+
+Phase 4 implements real-time document synchronization and cursor tracking using WebSockets, integrating database-level membership authentication and write authorization.
+
+### 1. Dedicated Collaboration WebSocket Server
+We built a custom Node.js WebSocket server script using the `ws` library and Yjs synchronization protocols:
+- **Relay Mechanism:** The server tracks active "document rooms". When clients edit, Yjs sync updates are broadcasted to all other connected clients in the same room.
+- **ESM & Environment Handling:** Environment variables from `.env` and `.env.local` are loaded first via a dedicated `src/server/env.ts` file to ensure the Prisma client receives the `DATABASE_URL` before any hoisting issues occur.
+
+### 2. Upgrade Handshake & Membership Authentication
+When a WebSocket connection upgrade is requested, the client passes `userId` and `room` query parameters:
+- **Database Authorization:** The server intercepts the connection upgrade, queries the `DocumentMember` table using Prisma, and verifies the user's membership. If the user does not have access to the document, the socket connection is rejected.
+- **Controlled IDs & Close Cleanup:** The server tracks Yjs client IDs associated with each socket connection. When a client disconnects, their awareness state is instantly cleaned up to remove cursor presence from other active editors.
+
+### 3. Viewer Write Blocking at the Protocol Level
+To prevent malicious write overrides or standard write events from unprivileged users:
+- If a connected user has a `VIEWER` role, their connection is flagged as `isReadOnly = true`.
+- When processing incoming binary payloads, if `isReadOnly` is active, the server drops and discards Yjs `SyncStep2` (1) and `Update` (2) packets, preventing them from modifying the server-side document.
+
+### 4. Real-Time Presence & Labeled Cursors
+- **Awareness Protocol:** Client cursor coordinates and user initials/names are synchronized via Yjs awareness events.
+- **Dynamic Labeled Carets:** Inside [src/app/globals.css](file:///c:/house-of-edtech-assignment/src/app/globals.css), custom CSS rules format `.collaboration-carets__caret` and `.collaboration-carets__label` tags to render labeled floating cursors.
+- **Deterministic Theme Colors:** A hashing algorithm (`getRandomColor`) maps each collaborator's user ID to a premium palette color matching our design system, ensuring consistent cursor markers.
+
+### 5. Collaboration Sync Bug Fixes & Stability
+- **Content Duplication Race Condition Prevention:** To prevent document content from being duplicated when a new collaborator joins, editor initialization waits for both `localSynced` (from `IndexeddbPersistence`) and `remoteSynced` (from `WebsocketProvider` handshake completion) before verifying if the document is empty and populating the `initialContent`. A 2-second fallback timeout ensures the editor remains interactive if the client is offline or the server is down.
+- **Write Loop Storm Mitigation:** To prevent thundering herd DB saves (where remote updates trigger local `onUpdate` handlers, causing all clients to hit PostgreSQL simultaneously), the client checks `isChangeOrigin(transaction)`. If true (remote change), the client skips DB persistence, ensuring only the client originating the keystrokes saves to the database.
+- **Caret Color Resolving:** Cursor border and name tag backgrounds are styled using `currentColor` to dynamically bind to the user's color attribute, making cursors and collaborator names fully visible in real-time.
