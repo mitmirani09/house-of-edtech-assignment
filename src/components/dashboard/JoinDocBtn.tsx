@@ -45,22 +45,22 @@ export function JoinDocBtn() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="outline" className="border-slate-800 text-slate-300 hover:bg-slate-900 hover:text-white cursor-pointer" />}>
+      <DialogTrigger render={<Button variant="outline" className="border-border text-foreground hover:bg-accent cursor-pointer" />}>
         <span className="flex items-center">
-          <Link2 className="mr-2 h-4 w-4" /> Join Document
+          <Link2 className="mr-2 h-4 w-4 text-muted-foreground" /> Join Document
         </span>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px] bg-slate-950 border-slate-800 text-white">
+      <DialogContent className="sm:max-w-[425px] bg-card border-border text-foreground">
         <DialogHeader>
-          <DialogTitle className="text-white">Join Document</DialogTitle>
-          <DialogDescription className="text-slate-400">
+          <DialogTitle className="text-foreground">Join Document</DialogTitle>
+          <DialogDescription className="text-muted-foreground">
             Enter the Document ID shared with you to join. You will join with the Viewer role by default.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="documentId" className="text-slate-300">Document ID</Label>
+              <Label htmlFor="documentId" className="text-foreground">Document ID</Label>
               <Input
                 id="documentId"
                 placeholder="clx1234abcd..."
@@ -68,7 +68,7 @@ export function JoinDocBtn() {
                 onChange={(e) => setDocumentId(e.target.value)}
                 disabled={isPending}
                 required
-                className="bg-slate-900 border-slate-800 text-white placeholder-slate-500"
+                className="bg-white border-border text-foreground placeholder-muted-foreground focus-visible:ring-primary focus-visible:border-primary"
               />
             </div>
           </div>
@@ -78,14 +78,14 @@ export function JoinDocBtn() {
               variant="outline"
               onClick={() => setOpen(false)}
               disabled={isPending}
-              className="border-slate-800 text-slate-300 hover:bg-slate-900 hover:text-white"
+              className="cursor-pointer"
             >
               Cancel
             </Button>
             <Button
               type="submit"
               disabled={isPending}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground cursor-pointer"
             >
               {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Join
