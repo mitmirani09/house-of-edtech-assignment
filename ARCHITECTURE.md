@@ -1,4 +1,4 @@
-# EdtechDocs - Architecture & System Design (Phase 1)
+# EdtechDocs - Architecture & System Design (Phase 1 & 2)
 
 This document provides a comprehensive overview of the design patterns, architectural layers, and technologies utilized in **EdtechDocs**, a local-first collaborative document editor.
 
@@ -105,3 +105,57 @@ For our design system, we utilize Tailwind CSS v4 configured with brand-specific
 - **Typography Engine:** Next.js loads and injects `Inter` for headers/body fonts and `JetBrains Mono` for input labels (`font-label`).
 - **Render-Based Triggering:** We utilize Base UI's `render` prop composition model (e.g. `<DialogTrigger render={<Button ... />} />`) rather than the older Radix-style `asChild` composition, ensuring clean React 19 node trees.
 - **Group Context Enforcement:** In accordance with Base UI constraints, menu parts such as `DropdownMenuLabel` are securely nested inside `<DropdownMenuGroup>` to ensure proper accessibility and context alignment.
+- **Transition Smoothness:** Optimized Dialog and Dropdown Menu opening animations to `duration-200` to prevent laggy rendering.
+
+---
+
+## 📝 Phase 2: Core Editor Architecture
+
+Phase 2 introduces the collaborative rich-text editor engine utilizing TipTap (an extensible wrapper around ProseMirror) and links it directly with PostgreSQL persistence via secure, role-based Server Actions.
+
+```mermaid
+graph TD
+    Page[src/app/documents/[id]/page.tsx - Server Component]
+    ActionGet[getDocumentWithRole Server Action]
+    ActionSave[updateDocumentContent Server Action]
+    ClientEditor[src/components/editor/EditorContainer.tsx - Client Component]
+    TipTap[TipTap Editor Instance]
+    Postgres[(PostgreSQL)]
+
+    Page -->|1. Fetch Session & Member Role| ActionGet
+    ActionGet -->|Query Membership| Postgres
+    Page -->|2. Render Container with Initial Content & Role| ClientEditor
+    ClientEditor -->|3. Instantiate TipTap| TipTap
+    TipTap -->|4a. Debounced Keypress 1.2s| ActionSave
+    TipTap -->|4b. On Blur Event Immediate| ActionSave
+    ActionSave -->|5. Validate RBAC Owner/Editor| Postgres
+```
+
+### 1. Database Schema Extension
+We added a `content` field to the `Document` schema:
+* `content String? @default("")`: Stores the document's rich-text representation as standard HTML string.
+
+### 2. Role-Based Access Control (RBAC) & Editor Canvas Modes
+Access validation is enforced at the Server Action level and reflected in the UI:
+* **Server Action Enforcement (`updateDocumentContent`):** Checks membership in the junction table `DocumentMember`. Only users with `OWNER` or `EDITOR` roles are allowed to commit changes. Requests from `VIEWER` or non-members are rejected.
+* **UI Customization:**
+  * For **OWNER** or **EDITOR** roles, the editor instance is fully interactive. Custom toolbar commands (Bold, Italic, lists, headings) are rendered and active.
+  * For the **VIEWER** role, the toolbar is hidden, the canvas is set to `editable: false`, and an alert banner is displayed: `Viewing Mode — Document is read-only`.
+
+### 3. Synchronous Client-to-Cloud Saving Strategy
+The TipTap client handles persistence automatically through two actions:
+1. **Debounced saving (onUpdate):** Keystrokes invoke a timer that triggers after a `1200ms` typing pause. This limits database write load while ensuring work is saved automatically during active writing.
+2. **Immediate saving (onBlur):** When the editor canvas loses focus (blur event), any pending debounced timers are cleared, and the content is saved immediately to PostgreSQL.
+
+### 4. Next.js 16 Dynamic Routing and Param Resolution
+Next.js 16 requires dynamic route params to be treated as Promises. The route `/documents/[id]/page.tsx` resolves params asynchronously:
+```typescript
+interface DocumentPageProps {
+  params: Promise<{ id: string }>
+}
+export default async function DocumentPage({ params }: DocumentPageProps) {
+  const { id } = await params;
+  // Fetch document metadata and membership role...
+}
+```
+This protects dynamic document routes at the server level, redirecting unauthenticated or unauthorized users back to the login or dashboard pages.
