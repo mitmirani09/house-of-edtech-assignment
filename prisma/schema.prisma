@@ -39,14 +39,15 @@ model DocumentMember {
 }
 
 model VersionSnapshot {
-  id         String   @id @default(cuid())
-  documentId String
-  createdBy  String
-  label      String?
-  yState     Bytes    // Encoded Yjs state snapshot
-  createdAt  DateTime @default(now())
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  user       User     @relation(fields: [createdBy], references: [id])
+  id          String   @id @default(cuid())
+  documentId  String
+  createdBy   String
+  label       String?
+  yState      Bytes    // Encoded Yjs state snapshot
+  htmlContent String?  @default("") // HTML snapshot for reliable preview
+  createdAt   DateTime @default(now())
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [createdBy], references: [id])
 }
 
 enum Role {

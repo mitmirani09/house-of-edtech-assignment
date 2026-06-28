@@ -9,6 +9,7 @@ import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { WebsocketProvider } from 'y-websocket'
 import { updateDocumentContent } from '@/lib/actions/document'
+import { restoreVersionSnapshot } from '@/lib/actions/version'
 import { Button } from '@/components/ui/button'
 import { 
   Bold, 
@@ -22,10 +23,14 @@ import {
   Heading3, 
   Check, 
   CloudOff,
-  RefreshCw
+  RefreshCw,
+  History,
+  Eye
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Role } from '@prisma/client'
+import { VersionHistorySidebar } from './VersionHistorySidebar'
+import type { Snapshot } from './types'
 
 // Deterministic color helper for collaboration cursors
 function getRandomColor(str: string) {
@@ -71,6 +76,9 @@ export function EditorContainer({
   const [remoteSynced, setRemoteSynced] = useState(false)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [previewSnapshot, setPreviewSnapshot] = useState<Snapshot | null>(null)
+
   const isSynced = localSynced && remoteSynced
   
   const isReadOnly = role === Role.VIEWER
@@ -96,7 +104,6 @@ export function EditorContainer({
   }
   const wsProvider = wsProviderRef.current
 
-  // Declaring handleSave first to prevent hoisting/lexical scope errors in useEditor and useEffect
   const handleSave = useCallback(async (html: string) => {
     try {
       const res = await updateDocumentContent(documentId, html)
@@ -112,7 +119,37 @@ export function EditorContainer({
     }
   }, [documentId])
 
-
+  const handleRestore = useCallback(async () => {
+    if (!previewSnapshot) return
+    try {
+      const htmlContent = previewSnapshot.htmlContent || ''
+      setPreviewSnapshot(null)
+      setIsHistoryOpen(false)
+      
+      // Because we use CSS hidden instead of unmounting, editor is always mounted!
+      if (ydoc) {
+         // Wipe the Yjs document state completely to ensure no merge conflicts with the old state!
+         const fragment = ydoc.getXmlFragment('default')
+         fragment.delete(0, fragment.length)
+      }
+      // Wait 50ms for React to render out of preview mode
+      setTimeout(async () => {
+        // Re-inject content directly through TipTap API to force a sync update
+        const evt = new CustomEvent('restore-content', { detail: htmlContent })
+        window.dispatchEvent(evt)
+      }, 50)
+      
+      // Persist restoration log in DB
+      await restoreVersionSnapshot(documentId, previewSnapshot.id)
+      
+      setSaveStatus('saved')
+      toast.success('Version restored successfully!')
+    } catch (err) {
+      console.error(err)
+      toast.error('Failed to restore version')
+      setSaveStatus('error')
+    }
+  }, [documentId, previewSnapshot, handleSave, ydoc])
 
   const editor = useEditor({
     extensions: [
@@ -140,11 +177,7 @@ export function EditorContainer({
       if (isReadOnly) return
 
       // Skip database save if the transaction was triggered by a remote collaboration change
-      if (transaction && isChangeOrigin(transaction)) {
-        return
-      }
-
-      if (navigator.onLine) {
+      if (!isChangeOrigin(transaction)) {
         setSaveStatus('saving')
         
         if (saveTimeoutRef.current) {
@@ -173,6 +206,17 @@ export function EditorContainer({
     }
   })
 
+  useEffect(() => {
+    const handler = (e: any) => {
+       if (editor) {
+          editor.commands.setContent(e.detail)
+          handleSave(e.detail)
+       }
+    }
+    window.addEventListener('restore-content', handler as EventListener)
+    return () => window.removeEventListener('restore-content', handler as EventListener)
+  }, [editor, handleSave])
+
   const handleManualSave = useCallback(async () => {
     if (!editor || isReadOnly) return
     setSaveStatus('saving')
@@ -187,7 +231,10 @@ export function EditorContainer({
       setLocalSynced(true)
     })
     return () => {
-      provider.destroy()
+      // Delay destruction by a short time to allow pending updates to flush to IndexedDB
+      setTimeout(() => {
+        provider.destroy()
+      }, 300)
     }
   }, [documentId, ydoc])
 
@@ -216,11 +263,15 @@ export function EditorContainer({
     return () => {
       wsProvider.off('sync', handleSync)
       clearTimeout(timeoutId)
-      wsProvider.destroy()
-      wsProviderRef.current = null
       
-      ydoc.destroy()
-      ydocRef.current = null
+      // Delay destruction to allow pending socket messages to flush
+      setTimeout(() => {
+        wsProvider.destroy()
+        if (wsProviderRef.current === wsProvider) wsProviderRef.current = null
+        
+        ydoc.destroy()
+        if (ydocRef.current === ydoc) ydocRef.current = null
+      }, 300)
     }
   }, [wsProvider, ydoc])
 
@@ -250,16 +301,15 @@ export function EditorContainer({
     }
   }, [editor, isReadOnly, handleSave])
 
-  // Populate editor with initialContent if IndexedDB has no content
+  // Populate editor with initialContent if the document is empty
   useEffect(() => {
     if (isSynced && editor) {
-      const isDocEmpty = ydoc.getXmlFragment('default').length === 0
-      if (isDocEmpty && initialContentRef.current) {
+      if (editor.isEmpty && initialContentRef.current) {
         editor.commands.setContent(initialContentRef.current)
         initialContentRef.current = ''
       }
     }
-  }, [isSynced, editor, ydoc])
+  }, [isSynced, editor])
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -270,178 +320,245 @@ export function EditorContainer({
     }
   }, [])
 
-
-
-  if (!editor) return null
+  if (!editor || !isSynced) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[500px] rounded-2xl border border-border bg-white p-8 md:p-12 shadow-sm gap-3">
+        <RefreshCw className="h-8 w-8 text-primary animate-spin" />
+        <p className="text-sm font-medium text-slate-500 animate-pulse">Connecting & loading document...</p>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Editor Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 p-2.5 rounded-xl border border-border bg-white shadow-sm">
-        <div className="flex flex-wrap items-center gap-1">
-          {/* Bold */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleBold().run()}
-            className={`cursor-pointer ${editor.isActive('bold') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Bold"
-          >
-            <Bold className="h-4 w-4" />
-          </Button>
-
-          {/* Italic */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleItalic().run()}
-            className={`cursor-pointer ${editor.isActive('italic') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Italic"
-          >
-            <Italic className="h-4 w-4" />
-          </Button>
-
-          <span className="h-6 w-px bg-border mx-1" />
-
-          {/* Heading 1 */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-            className={`cursor-pointer ${editor.isActive('heading', { level: 1 }) ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Heading 1"
-          >
-            <Heading1 className="h-4 w-4" />
-          </Button>
-
-          {/* Heading 2 */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-            className={`cursor-pointer ${editor.isActive('heading', { level: 2 }) ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Heading 2"
-          >
-            <Heading2 className="h-4 w-4" />
-          </Button>
-
-          {/* Heading 3 */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-            className={`cursor-pointer ${editor.isActive('heading', { level: 3 }) ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Heading 3"
-          >
-            <Heading3 className="h-4 w-4" />
-          </Button>
-
-          <span className="h-6 w-px bg-border mx-1" />
-
-          {/* Bullet List */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            className={`cursor-pointer ${editor.isActive('bulletList') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Bullet List"
-          >
-            <List className="h-4 w-4" />
-          </Button>
-
-          {/* Numbered List */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly}
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            className={`cursor-pointer ${editor.isActive('orderedList') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-            title="Numbered List"
-          >
-            <ListOrdered className="h-4 w-4" />
-          </Button>
-
-          <span className="h-6 w-px bg-border mx-1" />
-
-          {/* Undo */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly || !editor.can().undo()}
-            onClick={() => editor.chain().focus().undo().run()}
-            className="cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-            title="Undo"
-          >
-            <Undo className="h-4 w-4" />
-          </Button>
-
-          {/* Redo */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={isReadOnly || !editor.can().redo()}
-            onClick={() => editor.chain().focus().redo().run()}
-            className="cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-            title="Redo"
-          >
-            <Redo className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {/* Sync / Save Status Banner */}
-        <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-50 border border-border text-xs font-mono select-none">
-          {!isOnline ? (
-            <>
-              <span className="h-2 w-2 rounded-full bg-amber-500 inline-block animate-pulse" />
-              <span className="text-amber-800 font-medium">Offline — Saved Locally</span>
-            </>
-          ) : (
-            <>
-              {saveStatus === 'saved' && (
-                <>
-                  <Check className="h-3.5 w-3.5 text-secondary" />
-                  <span className="text-slate-600">Saved to Cloud</span>
-                </>
+    <>
+      {/* Preview UI */}
+      {previewSnapshot && (
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl border border-primary/20 bg-primary/5 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+                <History className="h-5 w-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-foreground">
+                  Previewing: {previewSnapshot.label || 'Unnamed Version'}
+                </h4>
+                <p className="text-xs text-muted-foreground">
+                  Saved on {new Date(previewSnapshot.createdAt).toLocaleString()} by {previewSnapshot.createdByName}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {!isReadOnly && (
+                <Button onClick={handleRestore} size="sm" className="cursor-pointer">
+                  Restore this version
+                </Button>
               )}
-              {saveStatus === 'saving' && (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 text-primary animate-spin" />
-                  <span className="text-primary font-medium">Saving...</span>
-                </>
-              )}
-              {saveStatus === 'error' && (
-                <div className="flex items-center gap-1.5">
-                  <CloudOff className="h-3.5 w-3.5 text-destructive" />
-                  <span className="text-destructive font-medium">Save Failed</span>
-                  <button
-                    onClick={handleManualSave}
-                    className="ml-1 px-1.5 py-0.5 rounded bg-destructive/10 text-destructive hover:bg-destructive/15 text-[10px] font-bold cursor-pointer transition-colors"
-                    title="Retry saving changes to cloud"
-                  >
-                    Retry
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Editor Body Canvas */}
-      <div className="min-h-[500px] w-full rounded-2xl border border-border bg-white p-8 md:p-12 shadow-sm focus-within:ring-1 focus-within:ring-primary/30 transition-all">
-        {isReadOnly && (
-          <div className="mb-4 text-xs font-semibold px-3 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-md max-w-fit">
-            Viewing Mode — Document is read-only
+              <Button variant="outline" onClick={() => setPreviewSnapshot(null)} size="sm" className="cursor-pointer">
+                Exit Preview
+              </Button>
+            </div>
           </div>
-        )}
-        <EditorContent editor={editor} className="prose max-w-none focus:outline-none" />
+
+          <div className="min-h-[500px] w-full rounded-2xl border border-border bg-white p-8 md:p-12 shadow-sm">
+            <div className="mb-4 text-xs font-semibold px-3 py-1 bg-primary/10 text-primary border border-primary/20 rounded-md max-w-fit flex items-center gap-1.5">
+              <Eye className="h-3.5 w-3.5" /> Preview Mode — read-only snapshot
+            </div>
+            {previewSnapshot.htmlContent ? (
+              <div
+                className="prose max-w-none"
+                dangerouslySetInnerHTML={{ __html: previewSnapshot.htmlContent }}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground italic">This snapshot has no content.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Main Editor UI */}
+      <div className={previewSnapshot ? 'hidden' : 'flex flex-col gap-6'}>
+        {/* Editor Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-4 p-2.5 rounded-xl border border-border bg-white shadow-sm">
+          <div className="flex flex-wrap items-center gap-1">
+            {/* Bold */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleBold().run()}
+              className={`cursor-pointer ${editor.isActive('bold') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Bold"
+            >
+              <Bold className="h-4 w-4" />
+            </Button>
+
+            {/* Italic */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleItalic().run()}
+              className={`cursor-pointer ${editor.isActive('italic') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Italic"
+            >
+              <Italic className="h-4 w-4" />
+            </Button>
+
+            <span className="h-6 w-px bg-border mx-1" />
+
+            {/* Heading 1 */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+              className={`cursor-pointer ${editor.isActive('heading', { level: 1 }) ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Heading 1"
+            >
+              <Heading1 className="h-4 w-4" />
+            </Button>
+
+            {/* Heading 2 */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+              className={`cursor-pointer ${editor.isActive('heading', { level: 2 }) ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Heading 2"
+            >
+              <Heading2 className="h-4 w-4" />
+            </Button>
+
+            {/* Heading 3 */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+              className={`cursor-pointer ${editor.isActive('heading', { level: 3 }) ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Heading 3"
+            >
+              <Heading3 className="h-4 w-4" />
+            </Button>
+
+            <span className="h-6 w-px bg-border mx-1" />
+
+            {/* Bullet List */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+              className={`cursor-pointer ${editor.isActive('bulletList') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Bullet List"
+            >
+              <List className="h-4 w-4" />
+            </Button>
+
+            {/* Ordered List */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly}
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+              className={`cursor-pointer ${editor.isActive('orderedList') ? 'bg-primary/10 text-primary hover:bg-primary/15' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+              title="Numbered List"
+            >
+              <ListOrdered className="h-4 w-4" />
+            </Button>
+            
+            <span className="h-6 w-px bg-border mx-1" />
+
+            {/* Undo */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly || !editor.can().undo()}
+              onClick={() => editor.chain().focus().undo().run()}
+              className="cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+              title="Undo"
+            >
+              <Undo className="h-4 w-4" />
+            </Button>
+
+            {/* Redo */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={isReadOnly || !editor.can().redo()}
+              onClick={() => editor.chain().focus().redo().run()}
+              className="cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+              title="Redo"
+            >
+              <Redo className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* Sync Status Indicators */}
+            <div className="flex items-center gap-3 text-xs px-3 py-1.5 rounded-lg bg-slate-50 border border-border">
+              <div className="flex items-center gap-1.5">
+                {isOnline ? (
+                  <span className="flex h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
+                ) : (
+                  <CloudOff className="h-3 w-3 text-red-500" />
+                )}
+                <span className="text-muted-foreground font-medium hidden sm:inline-block">
+                  {isOnline ? 'Online' : 'Offline'}
+                </span>
+              </div>
+              
+              <span className="h-3 w-px bg-border"></span>
+
+              <div className="flex items-center gap-1.5 text-muted-foreground font-medium">
+                {saveStatus === 'saving' && (
+                  <>
+                    <RefreshCw className="h-3 w-3 animate-spin text-primary" />
+                    <span>Saving...</span>
+                  </>
+                )}
+                {saveStatus === 'saved' && (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-500" />
+                    <span>Saved to cloud</span>
+                  </>
+                )}
+                {saveStatus === 'error' && (
+                  <span className="text-red-500">Save failed</span>
+                )}
+              </div>
+            </div>
+
+            {!isReadOnly && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsHistoryOpen(true)}
+                className="gap-2 text-primary border-primary/20 bg-primary/5 hover:bg-primary/10 cursor-pointer"
+              >
+                <History className="h-4 w-4" />
+                <span className="hidden sm:inline-block">History</span>
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Editor Canvas */}
+        <div className="min-h-[500px] w-full rounded-2xl border border-border bg-white p-8 md:p-12 shadow-sm focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/30 transition-all duration-200">
+          <EditorContent editor={editor} className="prose max-w-none focus:outline-none" />
+        </div>
+
+        <VersionHistorySidebar
+          documentId={documentId}
+          isOpen={isHistoryOpen}
+          onClose={() => setIsHistoryOpen(false)}
+          onPreviewVersion={(snapshot) => setPreviewSnapshot(snapshot)}
+          activePreviewId={undefined}
+          getEditorHTML={() => editor?.getHTML() ?? ''}
+        />
       </div>
-    </div>
+    </>
   )
 }

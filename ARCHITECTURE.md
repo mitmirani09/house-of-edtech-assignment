@@ -226,3 +226,32 @@ To prevent malicious write overrides or standard write events from unprivileged 
 - **Content Duplication Race Condition Prevention:** To prevent document content from being duplicated when a new collaborator joins, editor initialization waits for both `localSynced` (from `IndexeddbPersistence`) and `remoteSynced` (from `WebsocketProvider` handshake completion) before verifying if the document is empty and populating the `initialContent`. A 2-second fallback timeout ensures the editor remains interactive if the client is offline or the server is down.
 - **Write Loop Storm Mitigation:** To prevent thundering herd DB saves (where remote updates trigger local `onUpdate` handlers, causing all clients to hit PostgreSQL simultaneously), the client checks `isChangeOrigin(transaction)`. If true (remote change), the client skips DB persistence, ensuring only the client originating the keystrokes saves to the database.
 - **Caret Color Resolving:** Cursor border and name tag backgrounds are styled using `currentColor` to dynamically bind to the user's color attribute, making cursors and collaborator names fully visible in real-time.
+
+---
+
+## 🔄 Phase 5: Background Sync Engine
+
+Phase 5 introduces a robust background synchronization engine on the WebSocket server to ensure the CRDT document state (`yState`) is reliably persisted to the PostgreSQL database without overwhelming the network or database connections.
+
+### 1. Debounced Server-Side Saving
+- **Memory Tracking:** The WebSocket server maintains an active `WSSharedDoc` room for every connected document.
+- **Debounce Logic:** Whenever a client sends a Yjs update to the server, a debounced timer (2000ms) is triggered. If typing continues, the timer resets. When typing stops for 2 seconds, the server extracts the binary `yState` using `Y.encodeStateAsUpdate` and saves it directly to the database.
+- **Graceful Cleanup:** When the last client disconnects from a room, the connection closure event immediately flushes any pending saves to the database before the in-memory room is destroyed, ensuring zero data loss during page unloads.
+
+---
+
+## 🕒 Phase 6: Version History & Snapshotting
+
+Phase 6 provides Time Travel capabilities, allowing users to preview and restore historical document snapshots safely.
+
+### 1. Stable HTML-Based Snapshots
+Initially, we attempted to store snapshots using Yjs binary data (`yState`). However, restoring binary states asynchronously can lead to severe CRDT merge conflicts with offline clients.
+- **The Fix:** We pivoted to storing the visual output (the raw `htmlContent`) instead of the binary data for snapshots. 
+- **Preview UI:** The `VersionHistorySidebar` enables a full-screen "Preview Mode". Instead of instantiating a new TipTap editor, we render the snapshot directly using React's `dangerouslySetInnerHTML`. This provides an instant, lightweight, read-only preview without polluting the active CRDT instance.
+
+### 2. Resolving CRDT Restoration Conflicts & Race Conditions
+Restoring a Yjs document locally using TipTap's `setContent` caused two critical bugs:
+- **Bug 1 (The Blank Document Flash):** When the page hard-refreshed, TipTap would temporarily inject an invisible `<p></p>` node before the database finished loading. Our logic checked `length === 0` to decide whether to inject the restored content. Since `<p></p>` had a length of 1, the check failed, leaving the document completely blank.
+  - *Solution:* We replaced the manual node length check with TipTap's native `editor.isEmpty`, which correctly ignores default structural nodes and successfully injects the restored content.
+- **Bug 2 (Ghost Text Resurrecting):** When users restored a version and immediately clicked "Back to Dashboard", the React component unmounted. This instantly severed the WebSocket and IndexedDB connections before the Yjs `delete` and `insert` operations could flush to the cloud. When users reopened the document, the old deleted text would reappear.
+  - *Solution:* First, we added a `300ms` delayed cleanup on unmount for `y-indexeddb` and `y-websocket` to ensure pending operations flush. Secondly, we redesigned the Preview UI to keep the main editor mounted continuously using CSS visibility (`hidden`) rather than unmounting it. When restoring, we completely wipe the local CRDT fragment (`fragment.delete(0, fragment.length)`) and dispatch a custom event to re-inject the HTML. This entirely bypasses TipTap diffing conflicts and guarantees a clean state overwrite.

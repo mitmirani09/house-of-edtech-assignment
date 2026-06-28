@@ -79,15 +79,74 @@ class WSSharedDoc extends Y.Doc {
 }
 
 const docs = new Map<string, WSSharedDoc>()
+const docPromises = new Map<string, Promise<WSSharedDoc>>()
+const saveTimeouts = new Map<string, NodeJS.Timeout>()
 
-const getRoom = (docId: string): WSSharedDoc => {
-  let doc = docs.get(docId)
-  if (!doc) {
-    doc = new WSSharedDoc(docId)
-    docs.set(docId, doc)
-    console.log(`Document room ${docId} created.`)
+const saveToDb = async (docId: string, doc: WSSharedDoc) => {
+  const timeout = saveTimeouts.get(docId)
+  if (timeout) {
+    clearTimeout(timeout)
+    saveTimeouts.delete(docId)
   }
-  return doc
+
+  try {
+    const yState = Buffer.from(Y.encodeStateAsUpdate(doc))
+    await prisma.document.update({
+      where: { id: docId },
+      data: { yState },
+    })
+    console.log(`[DB] Saved yState to DB for room ${docId}`)
+  } catch (err) {
+    console.error(`[DB] Failed to save yState to DB for room ${docId}:`, err)
+  }
+}
+
+const debounceSave = (docId: string, doc: WSSharedDoc) => {
+  let timeout = saveTimeouts.get(docId)
+  if (timeout) {
+    clearTimeout(timeout)
+  }
+  timeout = setTimeout(() => {
+    saveToDb(docId, doc)
+  }, 2000)
+  saveTimeouts.set(docId, timeout)
+}
+
+const getRoom = async (docId: string): Promise<WSSharedDoc> => {
+  let promise = docPromises.get(docId)
+  if (!promise) {
+    promise = (async () => {
+      let doc = docs.get(docId)
+      if (!doc) {
+        doc = new WSSharedDoc(docId)
+        
+        // Setup database save listener
+        doc.on('update', () => {
+          debounceSave(docId, doc!)
+        })
+
+        docs.set(docId, doc)
+        console.log(`Document room ${docId} created.`)
+        
+        // Load initial state from database if available
+        try {
+          const dbDoc = await prisma.document.findUnique({
+            where: { id: docId },
+            select: { yState: true }
+          })
+          if (dbDoc && dbDoc.yState) {
+            Y.applyUpdate(doc, new Uint8Array(dbDoc.yState))
+            console.log(`[DB] Loaded yState from DB for room ${docId}`)
+          }
+        } catch (err) {
+          console.error(`[DB] Failed to load yState from DB for room ${docId}:`, err)
+        }
+      }
+      return doc
+    })()
+    docPromises.set(docId, promise)
+  }
+  return promise
 }
 
 const send = (doc: WSSharedDoc, conn: ExtWebSocket, message: Uint8Array) => {
@@ -104,7 +163,7 @@ const send = (doc: WSSharedDoc, conn: ExtWebSocket, message: Uint8Array) => {
   }
 }
 
-const closeConn = (doc: WSSharedDoc, conn: ExtWebSocket) => {
+const closeConn = async (doc: WSSharedDoc, conn: ExtWebSocket) => {
   if (doc.conns.has(conn)) {
     doc.conns.delete(conn)
     console.log(`Connection for User ${conn.userId} removed. Room size: ${doc.conns.size}`)
@@ -115,7 +174,11 @@ const closeConn = (doc: WSSharedDoc, conn: ExtWebSocket) => {
     }
   }
   if (doc.conns.size === 0) {
+    // Save to DB immediately before deleting room
+    await saveToDb(doc.name, doc)
+    
     docs.delete(doc.name)
+    docPromises.delete(doc.name)
     console.log(`Room ${doc.name} deleted (no active connections).`)
   }
   conn.close()
@@ -167,7 +230,7 @@ wss.on('connection', async (conn: ExtWebSocket, req) => {
     return
   }
 
-  const room = getRoom(docId)
+  const room = await getRoom(docId)
   room.conns.add(conn)
 
   // Listen to incoming messages
