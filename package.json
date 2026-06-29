@@ -7,7 +7,8 @@
     "build": "npx prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
-    "websocket": "tsx src/server/websocket.ts"
+    "websocket": "tsx src/server/websocket.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -54,6 +55,7 @@
     "prisma": "^7.8.0",
     "tailwindcss": "^4",
     "tsx": "^4.22.4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.9"
   }
 }
