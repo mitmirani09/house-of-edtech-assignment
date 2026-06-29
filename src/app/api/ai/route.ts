@@ -1,4 +1,4 @@
-import { google } from '@ai-sdk/google'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { generateText } from 'ai'
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
@@ -56,8 +56,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Call Google Gemini via Vercel AI SDK
-    const model = google('gemini-2.5-flash')
+    // Call Google Gemini via Vercel AI SDK with custom api key configuration
+    const googleProvider = createGoogleGenerativeAI({
+      apiKey,
+    })
+    const model = googleProvider('gemini-2.5-flash')
     const { text: resultText } = await generateText({
       model,
       prompt,
