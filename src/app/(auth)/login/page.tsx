@@ -1,6 +1,6 @@
 'use client'
 
-import { useActionState, useEffect } from 'react'
+import { useActionState, useEffect, useState } from 'react'
 
 import Link from 'next/link'
 import { loginUser } from '@/lib/actions/auth'
@@ -9,9 +9,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { toast } from 'sonner'
-import { Compass } from 'lucide-react'
+import { Compass, Eye, EyeOff } from 'lucide-react'
 
 export default function LoginPage() {
+  const [showPassword, setShowPassword] = useState(false)
   const [state, formAction, isPending] = useActionState(
     async (prevState: { error?: string } | null, formData: FormData) => {
       try {
@@ -88,15 +89,24 @@ export default function LoginPage() {
                   Forgot password?
                 </Link>
               </div>
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                required
-                disabled={isPending}
-                className="bg-white border-slate-200 hover:border-slate-300 text-[#0F172A] placeholder-slate-400 focus-visible:ring-[#6366F1] focus-visible:border-[#6366F1] h-11 px-3.5 rounded-lg text-sm"
-              />
+              <div className="relative">
+                <Input
+                  id="password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="••••••••"
+                  required
+                  disabled={isPending}
+                  className="bg-white border-slate-200 hover:border-slate-300 text-[#0F172A] placeholder-slate-400 focus-visible:ring-[#6366F1] focus-visible:border-[#6366F1] h-11 pl-3.5 pr-10 rounded-lg text-sm w-full"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
             {/* Submit Button */}

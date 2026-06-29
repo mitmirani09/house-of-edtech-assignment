@@ -3,7 +3,10 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 
 const prismaClientSingleton = () => {
-  const connectionString = process.env.DATABASE_URL
+  let connectionString = process.env.DATABASE_URL
+  if (connectionString && connectionString.includes('sslmode=require') && !connectionString.includes('uselibpqcompat')) {
+    connectionString += connectionString.includes('?') ? '&uselibpqcompat=true' : '?uselibpqcompat=true'
+  }
   const pool = new Pool({ connectionString })
   const adapter = new PrismaPg(pool)
   return new PrismaClient({ adapter })
