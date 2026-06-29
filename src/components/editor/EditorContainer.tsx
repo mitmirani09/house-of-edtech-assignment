@@ -25,11 +25,20 @@ import {
   CloudOff,
   RefreshCw,
   History,
-  Eye
+  Eye,
+  Sparkles,
+  Wand2,
+  CornerDownLeft,
+  Replace,
+  Loader2,
+  AlertTriangle,
+  ChevronDown,
+  X
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Role } from '@prisma/client'
 import { VersionHistorySidebar } from './VersionHistorySidebar'
+import { AiSidebar } from './AiSidebar'
 import type { Snapshot } from './types'
 
 // Deterministic color helper for collaboration cursors
@@ -77,12 +86,34 @@ export function EditorContainer({
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [isAiOpen, setIsAiOpen] = useState(false)
   const [previewSnapshot, setPreviewSnapshot] = useState<Snapshot | null>(null)
+
+  // AI Assistant States
+  const [isAiDropdownOpen, setIsAiDropdownOpen] = useState(false)
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false)
+  const [assistantLoading, setAssistantLoading] = useState(false)
+  const [assistantText, setAssistantText] = useState('')
+  const [aiResult, setAiResult] = useState('')
+  const [assistantError, setAssistantError] = useState<string | null>(null)
+
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
   const isSynced = localSynced && remoteSynced
   
   const isReadOnly = role === Role.VIEWER
   const initialContentRef = useRef(initialContent)
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsAiDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   // Create persistent Y.Doc instance
   const ydocRef = useRef<Y.Doc | null>(null)
@@ -320,6 +351,69 @@ export function EditorContainer({
     }
   }, [])
 
+  // AI Assistant trigger
+  const triggerAiAssistant = async (modifier: 'improve' | 'grammar' | 'shorten' | 'simplify') => {
+    if (!editor) return
+    setIsAiDropdownOpen(false)
+    
+    const { from, to } = editor.state.selection
+    const selectionText = editor.state.doc.textBetween(from, to, ' ')
+
+    if (!selectionText || selectionText.trim() === '') {
+      toast.error('Please highlight/select some text in the editor first.')
+      return
+    }
+
+    setAssistantText(selectionText)
+    setIsAssistantOpen(true)
+    setAssistantLoading(true)
+    setAiResult('')
+    setAssistantError(null)
+
+    try {
+      const response = await fetch('/api/ai', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'assistant',
+          text: selectionText,
+          modifier,
+        }),
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to process AI request')
+      }
+
+      setAiResult(data.result)
+    } catch (err: any) {
+      console.error(err)
+      setAssistantError(err.message || 'An error occurred while communicating with the AI.')
+      toast.error(err.message || 'Failed to process AI request')
+    } finally {
+      setAssistantLoading(false)
+    }
+  }
+
+  const handleReplaceSelection = () => {
+    if (!editor || !aiResult) return
+    const { from, to } = editor.state.selection
+    editor.chain().focus().insertContentAt({ from, to }, aiResult).run()
+    setIsAssistantOpen(false)
+    toast.success('Selection replaced with AI suggestion!')
+  }
+
+  const handleInsertBelow = () => {
+    if (!editor || !aiResult) return
+    const { to } = editor.state.selection
+    editor.chain().focus().insertContentAt(to, `\n${aiResult}`).run()
+    setIsAssistantOpen(false)
+    toast.success('AI suggestion inserted below selection!')
+  }
+
   if (!editor || !isSynced) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[500px] rounded-2xl border border-border bg-white p-8 md:p-12 shadow-sm gap-3">
@@ -494,6 +588,55 @@ export function EditorContainer({
             >
               <Redo className="h-4 w-4" />
             </Button>
+
+            {/* AI Assistant Dropdown (Triggered by Highlighted Selection) */}
+            {!isReadOnly && (
+              <div className="relative inline-block" ref={dropdownRef}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsAiDropdownOpen(!isAiDropdownOpen)}
+                  className="gap-1 px-2.5 h-8 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 border border-indigo-100 bg-indigo-50/20 font-bold text-xs cursor-pointer"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>Ask AI</span>
+                  <ChevronDown className="h-3 w-3 opacity-60" />
+                </Button>
+
+                {isAiDropdownOpen && (
+                  <div className="absolute left-0 mt-1 w-48 bg-white border border-border rounded-xl shadow-lg py-1.5 z-50 flex flex-col">
+                    <button
+                      onClick={() => triggerAiAssistant('improve')}
+                      className="px-4 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 cursor-pointer flex items-center gap-2"
+                    >
+                      <Wand2 className="h-3.5 w-3.5 text-indigo-500" />
+                      Improve Writing
+                    </button>
+                    <button
+                      onClick={() => triggerAiAssistant('grammar')}
+                      className="px-4 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 cursor-pointer flex items-center gap-2"
+                    >
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
+                      Fix Grammar
+                    </button>
+                    <button
+                      onClick={() => triggerAiAssistant('shorten')}
+                      className="px-4 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 cursor-pointer flex items-center gap-2"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-purple-500" />
+                      Make it Shorter
+                    </button>
+                    <button
+                      onClick={() => triggerAiAssistant('simplify')}
+                      className="px-4 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 cursor-pointer flex items-center gap-2"
+                    >
+                      <Eye className="h-3.5 w-3.5 text-amber-500" />
+                      Simplify Language
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -531,12 +674,31 @@ export function EditorContainer({
               </div>
             </div>
 
+            {/* AI Sidepanel Toggle */}
             {!isReadOnly && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setIsHistoryOpen(true)}
-                className="gap-2 text-primary border-primary/20 bg-primary/5 hover:bg-primary/10 cursor-pointer"
+                onClick={() => {
+                  setIsAiOpen(!isAiOpen)
+                  setIsHistoryOpen(false)
+                }}
+                className={`gap-2 border-indigo-100 bg-indigo-50/20 hover:bg-indigo-50/40 text-indigo-600 cursor-pointer ${isAiOpen ? 'bg-indigo-100' : ''}`}
+              >
+                <Sparkles className="h-4 w-4" />
+                <span className="hidden sm:inline-block">AI Assistant</span>
+              </Button>
+            )}
+
+            {!isReadOnly && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setIsHistoryOpen(!isHistoryOpen)
+                  setIsAiOpen(false)
+                }}
+                className={`gap-2 text-primary border-primary/20 bg-primary/5 hover:bg-primary/10 cursor-pointer ${isHistoryOpen ? 'bg-primary/10' : ''}`}
               >
                 <History className="h-4 w-4" />
                 <span className="hidden sm:inline-block">History</span>
@@ -558,7 +720,98 @@ export function EditorContainer({
           activePreviewId={undefined}
           getEditorHTML={() => editor?.getHTML() ?? ''}
         />
+
+        <AiSidebar
+          isOpen={isAiOpen}
+          onClose={() => setIsAiOpen(false)}
+          getEditorHTML={() => editor?.getHTML() ?? ''}
+          getEditorText={() => editor?.getText() ?? ''}
+        />
       </div>
+
+      {/* AI Assistant Inline Modal */}
+      {isAssistantOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-[480px] bg-white rounded-2xl border border-slate-100 shadow-2xl p-6 flex flex-col gap-4 animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2 font-bold text-slate-800">
+                <Sparkles className="h-4.5 w-4.5 text-indigo-600 animate-pulse" />
+                <span>AI Writing Assistant</span>
+              </div>
+              <Button 
+                variant="ghost" 
+                size="icon-sm" 
+                disabled={assistantLoading} 
+                onClick={() => setIsAssistantOpen(false)}
+                className="cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* Selection Preview */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Original Text Selection</span>
+              <div className="max-h-24 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/50 p-3 text-xs text-slate-500 italic">
+                "{assistantText}"
+              </div>
+            </div>
+
+            {/* Response Section */}
+            <div className="flex-1 flex flex-col gap-1.5 min-h-[140px]">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">AI Suggestion</span>
+              {assistantLoading ? (
+                <div className="flex-1 flex flex-col items-center justify-center bg-indigo-50/20 border border-dashed border-indigo-100 rounded-xl gap-2 p-6">
+                  <Loader2 className="h-6 w-6 text-indigo-600 animate-spin" />
+                  <span className="text-xs font-semibold text-indigo-600 animate-pulse">Consulting Gemini...</span>
+                </div>
+              ) : assistantError ? (
+                <div className="flex-1 rounded-xl border border-red-100 bg-red-50/30 p-4 text-xs text-red-600 flex gap-2">
+                  <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                  <p className="leading-relaxed">{assistantError}</p>
+                </div>
+              ) : aiResult ? (
+                <div className="flex-1 rounded-xl border border-slate-100 bg-slate-50/50 p-4 text-xs text-slate-700 leading-relaxed overflow-y-auto font-medium">
+                  {aiResult}
+                </div>
+              ) : (
+                <div className="flex-1 border border-dashed border-slate-200 rounded-xl flex items-center justify-center p-6 text-xs text-muted-foreground">
+                  Waiting for response...
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            {!assistantLoading && !assistantError && aiResult && (
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <Button 
+                  onClick={handleReplaceSelection} 
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Replace className="h-3.5 w-3.5" />
+                  Replace Selection
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={handleInsertBelow} 
+                  className="text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <CornerDownLeft className="h-3.5 w-3.5" />
+                  Insert Below
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  onClick={() => setIsAssistantOpen(false)}
+                  className="text-xs font-semibold cursor-pointer"
+                >
+                  Discard
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   )
 }
