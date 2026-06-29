@@ -4,6 +4,40 @@ import { auth } from '@/auth'
 import prisma from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { Role } from '@prisma/client'
+import { z } from 'zod'
+import { rateLimit } from '@/lib/rateLimit'
+import { sanitizeHtml } from '@/lib/sanitize'
+
+// Zod schemas for validation
+const CreateDocumentSchema = z.object({
+  title: z.string().min(1, 'Title is required').max(100, 'Title cannot exceed 100 characters'),
+})
+
+const JoinDocumentSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+})
+
+const UpdateContentSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+  content: z.string().max(2 * 1024 * 1024, 'Document payload cannot exceed 2MB'),
+})
+
+const InviteUserSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+  email: z.string().email('Invalid email address'),
+  role: z.nativeEnum(Role),
+})
+
+const UpdateMemberRoleSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+  memberUserId: z.string().cuid('Invalid User ID'),
+  newRole: z.nativeEnum(Role),
+})
+
+const RemoveMemberSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+  memberUserId: z.string().cuid('Invalid User ID'),
+})
 
 export async function createDocument(formData: FormData) {
   const session = await auth()
@@ -11,15 +45,22 @@ export async function createDocument(formData: FormData) {
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`create-doc:${session.user.id}`, 10, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
   const title = formData.get('title') as string
-  if (!title || title.trim() === '') {
-    return { error: 'Title is required' }
+  const validation = CreateDocumentSchema.safeParse({ title })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
   }
 
   try {
     const doc = await prisma.document.create({
       data: {
-        title: title.trim(),
+        title: validation.data.title.trim(),
         members: {
           create: {
             userId: session.user.id,
@@ -43,14 +84,21 @@ export async function joinDocument(formData: FormData) {
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`join-doc:${session.user.id}`, 15, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
   const documentId = formData.get('documentId') as string
-  if (!documentId || documentId.trim() === '') {
-    return { error: 'Document ID is required' }
+  const validation = JoinDocumentSchema.safeParse({ documentId })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
   }
 
   try {
     const doc = await prisma.document.findUnique({
-      where: { id: documentId.trim() },
+      where: { id: validation.data.documentId },
     })
 
     if (!doc) {
@@ -94,12 +142,17 @@ export async function getDocumentWithRole(documentId: string) {
     return { error: 'Not authenticated' }
   }
 
+  const validation = JoinDocumentSchema.safeParse({ documentId })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
   try {
     const membership = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
           userId: session.user.id,
-          documentId,
+          documentId: validation.data.documentId,
         },
       },
       include: {
@@ -122,20 +175,32 @@ export async function getDocumentWithRole(documentId: string) {
   }
 }
 
-
 export async function updateDocumentContent(documentId: string, content: string) {
-  // return { error: 'Simulated connection timeout to database.' }
   const session = await auth()
   if (!session?.user?.id) {
     return { error: 'Not authenticated' }
   }
+
+  // Rate Limiting
+  const limitRes = rateLimit(`save:${session.user.id}`, 120, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
+  const validation = UpdateContentSchema.safeParse({ documentId, content })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
+  // Sanitize the HTML payload to prevent XSS
+  const sanitizedContent = sanitizeHtml(validation.data.content)
 
   try {
     const membership = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
           userId: session.user.id,
-          documentId,
+          documentId: validation.data.documentId,
         },
       },
     })
@@ -145,8 +210,8 @@ export async function updateDocumentContent(documentId: string, content: string)
     }
 
     await prisma.document.update({
-      where: { id: documentId },
-      data: { content },
+      where: { id: validation.data.documentId },
+      data: { content: sanitizedContent },
     })
 
     return { success: true }
@@ -162,12 +227,25 @@ export async function inviteUserToDocument(documentId: string, email: string, ro
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`invite:${session.user.id}`, 15, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
+  const validation = InviteUserSchema.safeParse({ documentId, email, role })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
+  const normalizedEmail = validation.data.email.trim().toLowerCase()
+
   // 1. Verify caller is OWNER
   const callerMember = await prisma.documentMember.findUnique({
     where: {
       userId_documentId: {
         userId: session.user.id,
-        documentId,
+        documentId: validation.data.documentId,
       },
     },
   })
@@ -175,8 +253,6 @@ export async function inviteUserToDocument(documentId: string, email: string, ro
   if (!callerMember || callerMember.role !== Role.OWNER) {
     return { error: 'Unauthorized. Only the owner can invite collaborators.' }
   }
-
-  const normalizedEmail = email.trim().toLowerCase()
 
   // 2. Look up target user by email
   const targetUser = await prisma.user.findUnique({
@@ -192,7 +268,7 @@ export async function inviteUserToDocument(documentId: string, email: string, ro
     where: {
       userId_documentId: {
         userId: targetUser.id,
-        documentId,
+        documentId: validation.data.documentId,
       },
     },
   })
@@ -205,12 +281,12 @@ export async function inviteUserToDocument(documentId: string, email: string, ro
     await prisma.documentMember.create({
       data: {
         userId: targetUser.id,
-        documentId,
-        role,
+        documentId: validation.data.documentId,
+        role: validation.data.role,
       },
     })
 
-    revalidatePath(`/documents/${documentId}`)
+    revalidatePath(`/documents/${validation.data.documentId}`)
     return { success: true }
   } catch (error) {
     console.error('Invite user error:', error)
@@ -224,12 +300,17 @@ export async function getDocumentMembers(documentId: string) {
     return { error: 'Not authenticated' }
   }
 
+  const validation = JoinDocumentSchema.safeParse({ documentId })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
   // Verify caller is a member
   const callerMember = await prisma.documentMember.findUnique({
     where: {
       userId_documentId: {
         userId: session.user.id,
-        documentId,
+        documentId: validation.data.documentId,
       },
     },
   })
@@ -240,7 +321,7 @@ export async function getDocumentMembers(documentId: string) {
 
   try {
     const members = await prisma.documentMember.findMany({
-      where: { documentId },
+      where: { documentId: validation.data.documentId },
       include: {
         user: {
           select: {
@@ -268,12 +349,27 @@ export async function updateMemberRole(documentId: string, memberUserId: string,
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`member-role:${session.user.id}`, 20, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
+  const validation = UpdateMemberRoleSchema.safeParse({ documentId, memberUserId, newRole })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
+  if (validation.data.newRole === Role.OWNER) {
+    return { error: 'Cannot transfer ownership via this action.' }
+  }
+
   // Verify caller is OWNER
   const callerMember = await prisma.documentMember.findUnique({
     where: {
       userId_documentId: {
         userId: session.user.id,
-        documentId,
+        documentId: validation.data.documentId,
       },
     },
   })
@@ -282,16 +378,12 @@ export async function updateMemberRole(documentId: string, memberUserId: string,
     return { error: 'Unauthorized. Only the owner can change collaborator roles.' }
   }
 
-  if (newRole === Role.OWNER) {
-    return { error: 'Cannot transfer ownership via this action.' }
-  }
-
   try {
     const targetMember = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
-          userId: memberUserId,
-          documentId,
+          userId: validation.data.memberUserId,
+          documentId: validation.data.documentId,
         },
       },
     })
@@ -307,16 +399,16 @@ export async function updateMemberRole(documentId: string, memberUserId: string,
     await prisma.documentMember.update({
       where: {
         userId_documentId: {
-          userId: memberUserId,
-          documentId,
+          userId: validation.data.memberUserId,
+          documentId: validation.data.documentId,
         },
       },
       data: {
-        role: newRole,
+        role: validation.data.newRole,
       },
     })
 
-    revalidatePath(`/documents/${documentId}`)
+    revalidatePath(`/documents/${validation.data.documentId}`)
     return { success: true }
   } catch (error) {
     console.error('Update member role error:', error)
@@ -330,12 +422,23 @@ export async function removeMember(documentId: string, memberUserId: string) {
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`remove-member:${session.user.id}`, 20, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
+  const validation = RemoveMemberSchema.safeParse({ documentId, memberUserId })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
   // Verify caller is OWNER
   const callerMember = await prisma.documentMember.findUnique({
     where: {
       userId_documentId: {
         userId: session.user.id,
-        documentId,
+        documentId: validation.data.documentId,
       },
     },
   })
@@ -348,8 +451,8 @@ export async function removeMember(documentId: string, memberUserId: string) {
     const targetMember = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
-          userId: memberUserId,
-          documentId,
+          userId: validation.data.memberUserId,
+          documentId: validation.data.documentId,
         },
       },
     })
@@ -365,13 +468,13 @@ export async function removeMember(documentId: string, memberUserId: string) {
     await prisma.documentMember.delete({
       where: {
         userId_documentId: {
-          userId: memberUserId,
-          documentId,
+          userId: validation.data.memberUserId,
+          documentId: validation.data.documentId,
         },
       },
     })
 
-    revalidatePath(`/documents/${documentId}`)
+    revalidatePath(`/documents/${validation.data.documentId}`)
     return { success: true }
   } catch (error) {
     console.error('Remove member error:', error)

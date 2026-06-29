@@ -4,6 +4,25 @@ import { auth } from '@/auth'
 import prisma from '@/lib/prisma'
 import { Role } from '@prisma/client'
 import { revalidatePath } from 'next/cache'
+import { z } from 'zod'
+import { rateLimit } from '@/lib/rateLimit'
+import { sanitizeHtml } from '@/lib/sanitize'
+
+// Zod schemas for validation
+const CreateSnapshotSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+  label: z.string().max(50, 'Label cannot exceed 50 characters').nullable(),
+  htmlContent: z.string().max(2 * 1024 * 1024, 'Snapshot payload cannot exceed 2MB'),
+})
+
+const GetSnapshotsSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+})
+
+const RestoreSnapshotSchema = z.object({
+  documentId: z.string().cuid('Invalid Document ID'),
+  snapshotId: z.string().cuid('Invalid Snapshot ID'),
+})
 
 // Create a snapshot using the current editor HTML content
 export async function createVersionSnapshot(documentId: string, label: string | null, htmlContent: string) {
@@ -12,13 +31,26 @@ export async function createVersionSnapshot(documentId: string, label: string | 
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`create-snapshot:${session.user.id}`, 10, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
+  const validation = CreateSnapshotSchema.safeParse({ documentId, label, htmlContent })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
+  const sanitizedHtml = sanitizeHtml(validation.data.htmlContent)
+
   try {
     // 1. Verify user membership and role (OWNER or EDITOR)
     const membership = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
           userId: session.user.id,
-          documentId,
+          documentId: validation.data.documentId,
         },
       },
     })
@@ -28,18 +60,17 @@ export async function createVersionSnapshot(documentId: string, label: string | 
     }
 
     // 2. Create the version snapshot record with the HTML content
-    // yState is kept as a minimal stub since we use htmlContent for reliable display
     const snapshot = await prisma.versionSnapshot.create({
       data: {
-        documentId,
+        documentId: validation.data.documentId,
         createdBy: session.user.id,
-        label: label?.trim() || null,
+        label: validation.data.label ? validation.data.label.trim() : null,
         yState: Buffer.from(''),  // minimal stub, not used
-        htmlContent: htmlContent,
+        htmlContent: sanitizedHtml,
       } as any,
     })
 
-    revalidatePath(`/documents/${documentId}`)
+    revalidatePath(`/documents/${validation.data.documentId}`)
     return { success: true, snapshotId: snapshot.id }
   } catch (error) {
     console.error('Failed to create version snapshot:', error)
@@ -53,13 +84,18 @@ export async function getVersionSnapshots(documentId: string) {
     return { error: 'Not authenticated' }
   }
 
+  const validation = GetSnapshotsSchema.safeParse({ documentId })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
   try {
     // Verify membership
     const membership = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
           userId: session.user.id,
-          documentId,
+          documentId: validation.data.documentId,
         },
       },
     })
@@ -69,7 +105,7 @@ export async function getVersionSnapshots(documentId: string) {
     }
 
     const snapshots = await prisma.versionSnapshot.findMany({
-      where: { documentId },
+      where: { documentId: validation.data.documentId },
       include: {
         user: {
           select: {
@@ -104,13 +140,24 @@ export async function restoreVersionSnapshot(documentId: string, snapshotId: str
     return { error: 'Not authenticated' }
   }
 
+  // Rate Limiting
+  const limitRes = rateLimit(`restore-snapshot:${session.user.id}`, 10, 60000)
+  if (!limitRes.success) {
+    return { error: limitRes.error }
+  }
+
+  const validation = RestoreSnapshotSchema.safeParse({ documentId, snapshotId })
+  if (!validation.success) {
+    return { error: validation.error.issues[0].message }
+  }
+
   try {
     // 1. Verify caller has OWNER or EDITOR role
     const membership = await prisma.documentMember.findUnique({
       where: {
         userId_documentId: {
           userId: session.user.id,
-          documentId,
+          documentId: validation.data.documentId,
         },
       },
     })
@@ -121,7 +168,7 @@ export async function restoreVersionSnapshot(documentId: string, snapshotId: str
 
     // 2. Fetch the snapshot html
     const snapshot = await prisma.versionSnapshot.findUnique({
-      where: { id: snapshotId },
+      where: { id: validation.data.snapshotId },
       select: { htmlContent: true } as any,
     })
 
@@ -131,7 +178,7 @@ export async function restoreVersionSnapshot(documentId: string, snapshotId: str
 
     // 3. Update the document content column with restored HTML
     await prisma.document.update({
-      where: { id: documentId },
+      where: { id: validation.data.documentId },
       data: {
         content: (snapshot as any).htmlContent || '',
         // Also clear the yState so the WS server loads fresh from html on restart
@@ -139,7 +186,7 @@ export async function restoreVersionSnapshot(documentId: string, snapshotId: str
       },
     })
 
-    revalidatePath(`/documents/${documentId}`)
+    revalidatePath(`/documents/${validation.data.documentId}`)
     return { success: true }
   } catch (error) {
     console.error('Failed to restore version snapshot:', error)
